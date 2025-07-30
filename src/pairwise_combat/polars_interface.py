@@ -10,7 +10,7 @@ import polars as pl
 import numpy as np
 from typing import List, Optional, Tuple
 
-from pairwise_combat import PairwiseComBAT
+from src.pairwise_combat.core import PairwiseComBAT
 
 
 class PairwiseComBATDataFrame:

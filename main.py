@@ -1,6 +1,6 @@
 import numpy as np
 from matplotlib import pyplot as plt
-from pairwise_combat import PairwiseComBAT, Site
+from src.pairwise_combat.core import PairwiseComBAT, Site
 
 MIN_AGE = 40
 MAX_AGE = 95
@@ -154,7 +154,7 @@ def test_different_age_ranges():
 def main():
     """Main function demonstrating various aspects of Pairwise-ComBAT"""
     # Run the basic demo
-    from pairwise_combat import demo_pairwise_combat
+    from src.pairwise_combat.core import demo_pairwise_combat
     demo_pairwise_combat()
     
     # Run comparison with different batch effects

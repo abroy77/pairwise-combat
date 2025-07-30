@@ -2,8 +2,8 @@
 from sklearn.metrics import mean_squared_error
 import pytest
 import numpy as np
-from pairwise_combat import PairwiseComBAT
-from sites import FeatureProperties, Site
+from pairwise_combat.core import PairwiseComBAT
+from tests.sites import FeatureProperties, Site
 
 # Test constants
 MIN_AGE = 18

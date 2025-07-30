@@ -13,6 +13,10 @@ paper_tex/
 .pytest_cache/
 .ruff_cache/
 
-# mac stuff
+# local_data
+data/
+models/
+scripts/
 
+# mac stuff
 .DS_Store

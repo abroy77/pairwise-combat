@@ -8,9 +8,9 @@ import numpy as np
 import tempfile
 from pathlib import Path
 from sklearn.metrics import mean_squared_error
-from sites import FeatureProperties, Site
+from tests.sites import FeatureProperties, Site
 
-from pairwise_combat_polars import PairwiseComBATDataFrame, create_example_dataframe
+from pairwise_combat.polars_interface import PairwiseComBATDataFrame, create_example_dataframe
 
 # Test constants  
 MIN_AGE = 18
