@@ -45,6 +45,7 @@ class PairwiseComBAT:
 
     def __init__(
         self,
+        metric: str = "metric",
         source_site: str = "source",
         target_site: str = "target",
         max_iter: int = 30,
@@ -57,6 +58,7 @@ class PairwiseComBAT:
             max_iter: Maximum iterations for Bayesian estimation
             tol: Convergence tolerance
         """
+        self.metric = metric
         self.source_site = source_site
         self.target_site = target_site
         self.max_iter = max_iter
@@ -555,6 +557,7 @@ class PairwiseComBAT:
             config_group.attrs["n_covariates"] = self.n_covariates
 
             # Save metadata
+            config_group.attrs["metric"] = self.metric
             config_group.attrs["source_site"] = self.source_site
             config_group.attrs["target_site"] = self.target_site
             metadata_group.attrs["version"] = "1.0"
@@ -562,9 +565,6 @@ class PairwiseComBAT:
             metadata_group.attrs["creation_time"] = datetime.now().isoformat()
             metadata_group.attrs["fitted"] = True
 
-        print(f"Model saved to {filepath}")
-        print("  Model version: 1.0")
-        print(f"  File size: {filepath.stat().st_size / 1024:.1f} KB")
 
     def load_model(self, filepath: str) -> None:
         """
@@ -609,6 +609,9 @@ class PairwiseComBAT:
             if isinstance(self.target_site, bytes):
                 self.target_site = self.target_site.decode()
 
+            self.metric = f["config"].attrs.get("metric", "metric")
+            if isinstance(self.metric, bytes):
+                self.metric = self.metric.decode()
             self.max_iter = int(f["config"].attrs["max_iter"])
             self.tol = float(f["config"].attrs["tol"])
             self.n_samples_ref = int(f["config"].attrs["n_samples_ref"])
@@ -628,7 +631,3 @@ class PairwiseComBAT:
             if isinstance(creation_time, bytes):
                 creation_time = creation_time.decode()
 
-        print(f"Model loaded from {filepath}")
-        print(f"  Model version: {version}")
-        print(f"  Created: {creation_time}")
-        print(f"  File size: {filepath.stat().st_size / 1024:.1f} KB")

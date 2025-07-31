@@ -9,8 +9,10 @@ instead of NumPy arrays.
 import polars as pl
 import numpy as np
 from typing import List, Optional, Tuple
+from pathlib import Path
+import h5py
 
-from src.pairwise_combat.core import PairwiseComBAT
+from .core import PairwiseComBAT
 
 
 class PairwiseComBATDataFrame:
@@ -21,9 +23,15 @@ class PairwiseComBATDataFrame:
     Polars DataFrames, handling data validation, conversion, and reshaping
     automatically.
     """
+    model: PairwiseComBAT
+    site_id_col: Optional[str]
+    data_cols: Optional[List[str]]
+    covariate_cols: Optional[List[str]]
+    is_fitted_: bool
     
     def __init__(
         self,
+        metric: str = "metric",
         source_site: str = "source",
         target_site: str = "target",
         max_iter: int = 30,
@@ -38,13 +46,9 @@ class PairwiseComBATDataFrame:
             max_iter: Maximum iterations for Bayesian estimation
             tol: Convergence tolerance
         """
-        self.source_site = source_site
-        self.target_site = target_site
-        self.max_iter = max_iter
-        self.tol = tol
-        
         # Initialize the underlying PairwiseComBAT model
         self.model = PairwiseComBAT(
+            metric=metric,
             source_site=source_site,
             target_site=target_site,
             max_iter=max_iter,
@@ -52,9 +56,9 @@ class PairwiseComBATDataFrame:
         )
         
         # Store column information for validation
-        self.site_id_col: Optional[str] = None
-        self.data_cols: Optional[List[str]] = None
-        self.covariate_cols: Optional[List[str]] = None
+        self.site_id_col = None
+        self.data_cols: None
+        self.covariate_cols: None
         self.is_fitted_: bool = False
     
     def _validate_dataframe(
@@ -90,10 +94,10 @@ class PairwiseComBATDataFrame:
         
         # Check that site_id column contains required site values
         site_values = df[site_id_col].unique().to_list()
-        if self.source_site not in site_values:
-            raise ValueError(f"Source site '{self.source_site}' not found in {site_id_col} column. Available: {site_values}")
-        if self.target_site not in site_values:
-            raise ValueError(f"Target site '{self.target_site}' not found in {site_id_col} column. Available: {site_values}")
+        if self.model.source_site not in site_values:
+            raise ValueError(f"Source site '{self.model.source_site}' not found in {site_id_col} column. Available: {site_values}")
+        if self.model.target_site not in site_values:
+            raise ValueError(f"Target site '{self.model.target_site}' not found in {site_id_col} column. Available: {site_values}")
         
         # Check that data and covariate columns are numeric
         non_numeric_cols = []
@@ -105,19 +109,14 @@ class PairwiseComBATDataFrame:
             raise ValueError(f"Non-numeric columns found: {non_numeric_cols}. All data and covariate columns must be numeric.")
         
         # Check that we have data for both sites
-        source_count = df.filter(pl.col(site_id_col) == self.source_site).height
-        target_count = df.filter(pl.col(site_id_col) == self.target_site).height
+        source_count = df.filter(pl.col(site_id_col) == self.model.source_site).height
+        target_count = df.filter(pl.col(site_id_col) == self.model.target_site).height
         
         if source_count == 0:
-            raise ValueError(f"No data found for source site '{self.source_site}'")
+            raise ValueError(f"No data found for source site '{self.model.source_site}'")
         if target_count == 0:
-            raise ValueError(f"No data found for target site '{self.target_site}'")
+            raise ValueError(f"No data found for target site '{self.model.target_site}'")
         
-        print("Validation passed:")
-        print(f"  - Source site '{self.source_site}': {source_count} samples")
-        print(f"  - Target site '{self.target_site}': {target_count} samples")
-        print(f"  - Data columns: {len(data_cols)} locations/voxels")
-        print(f"  - Covariate columns: {len(covariate_cols)} covariates")
     
     def _prepare_arrays(
         self,
@@ -144,8 +143,8 @@ class PairwiseComBATDataFrame:
         ])
         
         # Split data by site
-        df_ref = df.filter(pl.col(site_id_col) == self.target_site)
-        df_moving = df.filter(pl.col(site_id_col) == self.source_site)
+        df_ref = df.filter(pl.col(site_id_col) == self.model.target_site)
+        df_moving = df.filter(pl.col(site_id_col) == self.model.source_site)
         
         # Extract reference site data
         Y_ref = df_ref.select(data_cols).to_numpy().T  # Shape: (n_locations, n_samples)
@@ -207,18 +206,12 @@ class PairwiseComBATDataFrame:
         )
         
         self.is_fitted_ = True
-        print("Model fitted successfully!")
-        print(f"  - Global parameters learned for {len(data_cols)} locations")
-        print("  - Site effects estimated for source->target harmonization")
         
         return self
     
     def transform(
         self,
         df: pl.DataFrame,
-        site_id_col: Optional[str] = None,
-        data_cols: Optional[List[str]] = None,
-        covariate_cols: Optional[List[str]] = None,
     ) -> pl.DataFrame:
         """
         Harmonize data from source site to target site characteristics.
@@ -239,18 +232,18 @@ class PairwiseComBATDataFrame:
             raise ValueError("Model must be fitted before transformation. Call fit() first.")
         
         # Use fitted column names if not provided
-        site_id_col = site_id_col or self.site_id_col
-        data_cols = data_cols or self.data_cols
-        covariate_cols = covariate_cols or self.covariate_cols
+        site_id_col = self.site_id_col
+        data_cols = self.data_cols
+        covariate_cols = self.covariate_cols
         
         # Validate that we have the required information
         if not all([site_id_col, data_cols, covariate_cols]):
             raise ValueError("Column names must be provided either during fit() or transform()")
         
         # Filter to source site data only
-        source_data = df.filter(pl.col(site_id_col) == self.source_site)
+        source_data = df.filter(pl.col(site_id_col) == self.model.source_site)
         if source_data.height == 0:
-            raise ValueError(f"No data found for source site '{self.source_site}' in transform data")
+            raise ValueError(f"No data found for source site '{self.model.source_site}' in transform data")
         
         # Prepare arrays for transformation
         source_data_float = source_data.with_columns([
@@ -276,34 +269,14 @@ class PairwiseComBATDataFrame:
         result = source_data.drop(data_cols).hstack(harmonized_data)
         
         # If input contained non-source site data, include it unchanged
-        other_sites = df.filter(pl.col(site_id_col) != self.source_site)
+        other_sites = df.filter(pl.col(site_id_col) != self.model.source_site)
         if other_sites.height > 0:
             # Use diagonal concatenation to handle column mismatches
             result = pl.concat([result, other_sites], how="diagonal")
         
         return result
     
-    def fit_transform(
-        self,
-        df: pl.DataFrame,
-        site_id_col: str,
-        data_cols: List[str],
-        covariate_cols: List[str],
-    ) -> pl.DataFrame:
-        """
-        Fit the model and transform source site data in one step.
-        
-        Args:
-            df: Training DataFrame containing data from both sites
-            site_id_col: Name of column containing site identifiers
-            data_cols: List of column names containing response data
-            covariate_cols: List of column names containing covariates
-            
-        Returns:
-            DataFrame with source site data harmonized to target site
-        """
-        self.fit(df, site_id_col, data_cols, covariate_cols)
-        return self.transform(df, site_id_col, data_cols, covariate_cols)
+    
     
     def save_model(self, filepath: str) -> None:
         """
@@ -316,16 +289,60 @@ class PairwiseComBATDataFrame:
             raise ValueError("Model must be fitted before saving. Call fit() first.")
         
         self.model.save_model(filepath)
-    
-    def load_model(self, filepath: str) -> None:
+        # now save the additional data to this file
+        with h5py.File(filepath, 'a') as f:  
+            config_group = f["config"]
+            # Save as comma-separated strings for lists
+            config_group.attrs["site_id_col"] = self.site_id_col
+            config_group.attrs["data_cols"] = ",".join(self.data_cols)
+            config_group.attrs["covariate_cols"] = ",".join(self.covariate_cols)
+
+            
+            
+    @staticmethod
+    def load_model(filepath: str) -> "PairwiseComBATDataFrame":
         """
         Load a trained model from file.
         
         Args:
             filepath: Path to the saved model
+            
+        Returns:
+            PairwiseComBATDataFrame instance with loaded model
         """
-        self.model.load_model(filepath)
-        self.is_fitted_ = True
+        combat = PairwiseComBATDataFrame()
+        combat.model.load_model(filepath)
+        # load the rest manually
+        with h5py.File(filepath, 'r') as f:
+            config_group = f["config"]
+
+            # site_id_col
+            site_id_col = config_group.attrs.get("site_id_col", None)
+            if isinstance(site_id_col, bytes):
+                site_id_col = site_id_col.decode()
+            combat.site_id_col = site_id_col if site_id_col else None
+
+            # data_cols
+            data_cols = config_group.attrs.get("data_cols", None)
+            if data_cols is not None:
+                if isinstance(data_cols, bytes):
+                    data_cols = data_cols.decode()
+                combat.data_cols = data_cols.split(",") if data_cols else None
+            else:
+                combat.data_cols = None
+
+            # covariate_cols
+            covariate_cols = config_group.attrs.get("covariate_cols", None)
+            if covariate_cols is not None:
+                if isinstance(covariate_cols, bytes):
+                    covariate_cols = covariate_cols.decode()
+                combat.covariate_cols = covariate_cols.split(",") if covariate_cols else None
+            else:
+                combat.covariate_cols = None
+
+        combat.is_fitted_ = True
+        return combat
+    
     
     def get_model_info(self) -> dict:
         """
@@ -338,8 +355,8 @@ class PairwiseComBATDataFrame:
             raise ValueError("Model must be fitted first.")
         
         return {
-            "source_site": self.source_site,
-            "target_site": self.target_site,
+            "source_site": self.model.source_site,
+            "target_site": self.model.target_site,
             "n_locations": self.model.n_locations,
             "n_covariates": self.model.n_covariates,
             "n_samples_ref": self.model.n_samples_ref,
@@ -356,7 +373,6 @@ class PairwiseComBATDataFrame:
 def create_example_dataframe(
     n_samples_per_site: int = 50,
     n_locations: int = 3,
-    n_covariates: int = 2,
     source_site: str = "site_A",
     target_site: str = "site_B",
     random_seed: int = 42,

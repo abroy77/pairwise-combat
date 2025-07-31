@@ -159,7 +159,6 @@ class TestPairwiseComBATDataFrame:
         return create_example_dataframe(
             n_samples_per_site=30,
             n_locations=3,
-            n_covariates=2,
             source_site="site_A",
             target_site="site_B",
             random_seed=42
@@ -243,11 +242,7 @@ class TestPairwiseComBATDataFrame:
             combat_df.save_model(str(model_path))
             
             # Create new instance and load
-            new_combat = PairwiseComBATDataFrame(
-                source_site="site_A",
-                target_site="site_B"
-            )
-            new_combat.load_model(str(model_path))
+            new_combat = PairwiseComBATDataFrame.load_model(str(model_path))
             
             # Check that model is loaded
             assert new_combat.is_fitted_
@@ -257,9 +252,6 @@ class TestPairwiseComBATDataFrame:
             original_transform = combat_df.transform(sample_dataframe)
             loaded_transform = new_combat.transform(
                 sample_dataframe,
-                site_id_col="site_id",
-                data_cols=["voxel_1", "voxel_2", "voxel_3"],
-                covariate_cols=["age", "sex"]
             )
             
             # Results should be very close (allowing for numerical precision)
@@ -279,14 +271,18 @@ class TestPairwiseComBATDataFrame:
             tol=1e-6
         )
         
-        # Fit and transform
-        harmonized_df = combat.fit_transform(
+
+        combat.fit(
             df=dataframe_1d,
             site_id_col="site_id",
             data_cols=["voxel_1"],
-            covariate_cols=["age"]
+            covariate_cols=["age"] 
         )
-        
+        harmonized_df = combat.transform(
+            df=dataframe_1d,
+        )
+
+       
         # Extract original and harmonized data for MSE calculation
         ref_data = dataframe_1d.filter(pl.col("site_id") == "ref_site")["voxel_1"].to_numpy()
         test_original = dataframe_1d.filter(pl.col("site_id") == "test_site")["voxel_1"].to_numpy()
@@ -315,13 +311,16 @@ class TestPairwiseComBATDataFrame:
             max_iter=30,
             tol=1e-6
         )
-        
-        # Fit and transform
-        harmonized_df = combat.fit_transform(
+
+        combat.fit(
             df=dataframe_2d,
             site_id_col="site_id",
             data_cols=["voxel_1", "voxel_2"],
             covariate_cols=["age", "sex"]
+        )
+        
+        harmonized_df = combat.transform(
+            df=dataframe_2d,
         )
         
         # Extract data for MSE calculation
