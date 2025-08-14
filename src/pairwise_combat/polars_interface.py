@@ -12,7 +12,8 @@ from typing import List, Optional, Tuple
 from pathlib import Path
 import h5py
 
-from .core import PairwiseComBAT
+from pairwise_combat import PairwiseComBAT
+from pairwise_combat.quantile_regressor import MultiQuantileRegressor
 
 
 class PairwiseComBATDataFrame:
@@ -435,3 +436,530 @@ def create_example_dataframe(
     df_combined = df_combined.with_row_index("sample_id")
     
     return df_combined.sample(fraction=1.0, seed=random_seed)  # Shuffle rows
+
+
+class QuantileRegressorDataFrame:
+    """
+    DataFrame interface for MultiQuantileRegressor using Polars.
+    
+    This class provides a higher-level interface for training quantile regression 
+    models on multiple metrics and saving/loading them to/from a single HDF5 file.
+    """
+    
+    def __init__(self, alpha: float = 1.0, solver: str = "highs", fit_intercept: bool = True):
+        """
+        Initialize the QuantileRegressorDataFrame.
+        
+        Args:
+            alpha: Regularization strength for quantile regression
+            solver: Solver to use ('highs', 'highs-ds', 'highs-ipm', 'interior-point', 'revised simplex')
+            fit_intercept: Whether to fit an intercept term
+        """
+        self.alpha = alpha
+        self.solver = solver
+        self.fit_intercept = fit_intercept
+        self.models = {}  # metric_name -> MultiQuantileRegressor
+        self.fitted_metrics = set()
+        self.feature_cols = {}  # metric_name -> List[str] - stores feature column names for each fitted model
+        
+    def _validate_columns(self, df: pl.DataFrame, feature_cols: List[str], target_col: str) -> None:
+        """
+        Validate that required columns exist in the DataFrame.
+        
+        Args:
+            df: Input DataFrame
+            feature_cols: List of feature column names
+            target_col: Target column name
+            
+        Raises:
+            ValueError: If validation fails
+        """
+        missing_cols = []
+        
+        # Check feature columns
+        for col in feature_cols:
+            if col not in df.columns:
+                missing_cols.append(col)
+        
+        # Check target column
+        if target_col not in df.columns:
+            missing_cols.append(target_col)
+        
+        if missing_cols:
+            raise ValueError(f"Missing columns in DataFrame: {missing_cols}")
+            
+        # Check for missing values
+        for col in feature_cols + [target_col]:
+            if df[col].null_count() > 0:
+                raise ValueError(f"Column '{col}' contains missing values")
+    
+    def fit(
+        self,
+        df: pl.DataFrame,
+        feature_cols: List[str],
+        target_col: str,
+    ) -> "QuantileRegressorDataFrame":
+        """
+        Fit a quantile regression model for a specific metric.
+        
+        Args:
+            df: Training DataFrame
+            feature_cols: List of column names to use as features (X)
+            target_col: Column name to use as target (y)
+            metric_name: Name to assign to this metric. If None, uses target_col
+            
+        Returns:
+            self: Fitted instance
+            
+        Example:
+            >>> qr_df = QuantileRegressorDataFrame(alpha=0.1)
+            >>> qr_df.fit(
+            ...     df=train_data,
+            ...     feature_cols=["age", "sex", "education"],
+            ...     target_col="cortical_thickness",
+            ...     metric_name="cortical_thickness"
+            ... )
+        """
+        # Use target_col as metric_name if not provided
+            
+        # Validate input
+        self._validate_columns(df, feature_cols, target_col)
+        
+        # Extract arrays
+        X = df.select(feature_cols).to_numpy()
+        y = df.select(target_col).to_numpy().flatten()
+        
+        model = MultiQuantileRegressor(
+            metric_name=target_col,
+            alpha=self.alpha,
+            solver=self.solver,
+            fit_intercept=self.fit_intercept
+        )
+        
+        print(f"Training quantile regressor for metric: {target_col}")
+        model.fit(X, y)
+        
+        # Store model and feature columns
+        self.models[target_col] = model
+        self.fitted_metrics.add(target_col)
+        self.feature_cols[target_col] = feature_cols.copy()  # Store the feature column names used during training
+        
+        return self
+    
+    def predict(
+        self,
+        df: pl.DataFrame,
+        feature_cols: Optional[List[str]] = None,
+        metric_name: str = None,
+        percentile: int = None
+    ) -> np.ndarray:
+        """
+        Predict values for a specific metric and percentile.
+        
+        Args:
+            df: DataFrame with features
+            feature_cols: List of feature column names. If None, uses the same columns that were used during training
+            metric_name: Name of the fitted metric to use for prediction
+            percentile: Percentile to predict (1-99)
+            
+        Returns:
+            Predicted values as numpy array
+            
+        Raises:
+            ValueError: If metric is not fitted or percentile is invalid
+        """
+        if metric_name not in self.fitted_metrics:
+            raise ValueError(f"Metric '{metric_name}' has not been fitted. Available metrics: {list(self.fitted_metrics)}")
+        
+        # Use stored feature columns if not provided
+        if feature_cols is None:
+            if self.feature_cols[metric_name] is None:
+                raise ValueError(
+                    f"No feature column information available for metric '{metric_name}'. "
+                    "This may be an older model file. Please provide feature_cols explicitly."
+                )
+            feature_cols = self.feature_cols[metric_name]
+        else:
+            # Validate that provided feature_cols match training feature_cols (if available)
+            if self.feature_cols[metric_name] is not None:
+                training_feature_cols = self.feature_cols[metric_name]
+                if feature_cols != training_feature_cols:
+                    raise ValueError(
+                        f"Feature columns mismatch for metric '{metric_name}'. "
+                        f"Training used: {training_feature_cols}, but got: {feature_cols}"
+                    )
+        
+        # Validate columns (without target)
+        missing_cols = [col for col in feature_cols if col not in df.columns]
+        if missing_cols:
+            raise ValueError(f"Missing feature columns in DataFrame: {missing_cols}")
+        
+        # Extract features in the same order as training
+        X = df.select(feature_cols).to_numpy()
+        
+        # Predict
+        return self.models[metric_name].predict(X, percentile)
+    
+    def predict_single(
+        self,
+        feature_values: dict,
+        metric_name: str,
+        percentile: int
+    ) -> float:
+        """
+        Predict a single value for specific feature values.
+        
+        Args:
+            feature_values: Dictionary mapping feature names to values
+            metric_name: Name of the fitted metric to use for prediction
+            percentile: Percentile to predict (1-99)
+            
+        Returns:
+            Predicted value as float
+            
+        Example:
+            >>> prediction = qr_df.predict_single(
+            ...     feature_values={"age": 65, "sex": 1, "education": 16},
+            ...     metric_name="cortical_thickness",
+            ...     percentile=50
+            ... )
+        """
+        if metric_name not in self.fitted_metrics:
+            raise ValueError(f"Metric '{metric_name}' has not been fitted. Available metrics: {list(self.fitted_metrics)}")
+        
+        # Get the training feature columns for this metric
+        if self.feature_cols[metric_name] is None:
+            raise ValueError(
+                f"No feature column information available for metric '{metric_name}'. "
+                "This may be an older model file. Please retrain the model or provide a newer model file."
+            )
+        training_feature_cols = self.feature_cols[metric_name]
+        
+        # Validate that all required features are provided
+        missing_features = [col for col in training_feature_cols if col not in feature_values]
+        if missing_features:
+            raise ValueError(f"Missing feature values for metric '{metric_name}': {missing_features}")
+        
+        # Create feature array in the same order as training
+        feature_array = np.array([feature_values[col] for col in training_feature_cols])
+        
+        return self.models[metric_name].predict_single(feature_array, percentile)
+    
+    def predict_all_percentiles(
+        self,
+        df: pl.DataFrame,
+        feature_cols: Optional[List[str]] = None,
+        metric_name: str = None
+    ) -> np.ndarray:
+        """
+        Predict all percentiles for a specific metric.
+        
+        Args:
+            df: DataFrame with features
+            feature_cols: List of feature column names. If None, uses the same columns that were used during training
+            metric_name: Name of the fitted metric to use for prediction
+            
+        Returns:
+            Predictions array with shape (n_samples, n_percentiles)
+        """
+        if metric_name not in self.fitted_metrics:
+            raise ValueError(f"Metric '{metric_name}' has not been fitted. Available metrics: {list(self.fitted_metrics)}")
+        
+        # Use stored feature columns if not provided
+        if feature_cols is None:
+            if self.feature_cols[metric_name] is None:
+                raise ValueError(
+                    f"No feature column information available for metric '{metric_name}'. "
+                    "This may be an older model file. Please provide feature_cols explicitly."
+                )
+            feature_cols = self.feature_cols[metric_name]
+        else:
+            # Validate that provided feature_cols match training feature_cols (if available)
+            if self.feature_cols[metric_name] is not None:
+                training_feature_cols = self.feature_cols[metric_name]
+                if feature_cols != training_feature_cols:
+                    raise ValueError(
+                        f"Feature columns mismatch for metric '{metric_name}'. "
+                        f"Training used: {training_feature_cols}, but got: {feature_cols}"
+                    )
+        
+        # Validate columns
+        missing_cols = [col for col in feature_cols if col not in df.columns]
+        if missing_cols:
+            raise ValueError(f"Missing feature columns in DataFrame: {missing_cols}")
+        
+        # Extract features in the same order as training
+        X = df.select(feature_cols).to_numpy()
+        
+        # Get model and predict all percentiles manually since the method doesn't exist
+        model = self.models[metric_name]
+        n_samples = X.shape[0]
+        n_percentiles = len(model.percentiles_)
+        predictions = np.zeros((n_samples, n_percentiles))
+        
+        for i, percentile in enumerate(model.percentiles_):
+            predictions[:, i] = model.predict(X, percentile)
+        
+        return predictions
+    
+    def find_closest_percentile(
+        self,
+        feature_values: dict,
+        target_value: float,
+        metric_name: str
+    ) -> int:
+        """
+        Find the percentile whose prediction is closest to the target value.
+        
+        Args:
+            feature_values: Dictionary mapping feature names to values
+            target_value: Target value to match
+            metric_name: Name of the fitted metric to use
+            
+        Returns:
+            Closest percentile (int)
+        """
+        if metric_name not in self.fitted_metrics:
+            raise ValueError(f"Metric '{metric_name}' has not been fitted. Available metrics: {list(self.fitted_metrics)}")
+        
+        # Get the training feature columns for this metric
+        if self.feature_cols[metric_name] is None:
+            raise ValueError(
+                f"No feature column information available for metric '{metric_name}'. "
+                "This may be an older model file. Please retrain the model or provide a newer model file."
+            )
+        training_feature_cols = self.feature_cols[metric_name]
+        
+        # Validate that all required features are provided
+        missing_features = [col for col in training_feature_cols if col not in feature_values]
+        if missing_features:
+            raise ValueError(f"Missing feature values for metric '{metric_name}': {missing_features}")
+        
+        # Create feature array in the same order as training
+        feature_array = np.array([feature_values[col] for col in training_feature_cols])
+        
+        return self.models[metric_name].find_closest_percentile(feature_array, target_value)
+    
+    def save(self, filepath: str) -> None:
+        """
+        Save all fitted models to a single HDF5 file.
+        
+        Args:
+            filepath: Path where to save the models
+            
+        Example:
+            >>> qr_df.save("my_quantile_models.h5")
+        """
+        if not self.fitted_metrics:
+            raise ValueError("No models have been fitted. Nothing to save.")
+        
+        filepath = Path(filepath)
+        if filepath.suffix != ".h5":
+            filepath = filepath.with_suffix(".h5")
+        
+        with h5py.File(filepath, "w") as f:
+            # Save global configuration
+            config_group = f.create_group("global_config")
+            config_group.attrs["alpha"] = self.alpha
+            config_group.attrs["solver"] = self.solver
+            config_group.attrs["fit_intercept"] = self.fit_intercept
+            config_group.attrs["n_metrics"] = len(self.fitted_metrics)
+            
+            # Save list of fitted metrics
+            metrics_array = np.array(list(self.fitted_metrics), dtype='S')
+            f.create_dataset("fitted_metrics", data=metrics_array)
+            
+            # Save each model
+            for metric_name, model in self.models.items():
+                metric_group = f.create_group(f"metric_{metric_name}")
+                
+                # Save model parameters
+                params_group = metric_group.create_group("parameters")
+                config_group_metric = metric_group.create_group("config")
+                metadata_group = metric_group.create_group("metadata")
+                
+                # Save coefficients for each percentile
+                coeffs_group = params_group.create_group("coefficients")
+                intercepts_group = params_group.create_group("intercepts")
+                
+                for percentile in model.percentiles_:
+                    coeffs_group.create_dataset(
+                        f"percentile_{percentile}",
+                        data=model.coefficients_[percentile]
+                    )
+                    intercepts_group.create_dataset(
+                        f"percentile_{percentile}",
+                        data=model.intercepts_[percentile]
+                    )
+                
+                # Save model configuration
+                config_group_metric.attrs["alpha"] = model.alpha
+                config_group_metric.attrs["solver"] = model.solver
+                config_group_metric.attrs["fit_intercept"] = model.fit_intercept
+                config_group_metric.attrs["n_features"] = model.n_features_
+                
+                # Save percentiles array
+                params_group.create_dataset("percentiles", data=np.array(model.percentiles_))
+                
+                # Save metadata
+                metadata_group.attrs["metric_name"] = metric_name
+                metadata_group.attrs["model_type"] = "MultiQuantileRegressor"
+                metadata_group.attrs["version"] = "1.0"
+                metadata_group.attrs["fitted"] = True
+                
+                # Save feature column names used during training
+                feature_cols_bytes = [col.encode('utf-8') for col in self.feature_cols[metric_name]]
+                metadata_group.create_dataset("feature_cols", data=feature_cols_bytes)
+        
+        print(f"Saved {len(self.fitted_metrics)} models to {filepath}")
+        print(f"  Metrics: {', '.join(self.fitted_metrics)}")
+        print(f"  File size: {filepath.stat().st_size / 1024:.1f} KB")
+    
+    def load(self, filepath: str) -> "QuantileRegressorDataFrame":
+        """
+        Load all models from an HDF5 file.
+        
+        Args:
+            filepath: Path to the saved models file
+            
+        Returns:
+            self: Loaded instance
+            
+        Example:
+            >>> qr_df = QuantileRegressorDataFrame()
+            >>> qr_df.load("my_quantile_models.h5")
+        """
+        filepath = Path(filepath)
+        
+        with h5py.File(filepath, "r") as f:
+            # Load global configuration
+            global_config = f["global_config"]
+            self.alpha = global_config.attrs["alpha"]
+            self.solver = global_config.attrs["solver"]
+            self.fit_intercept = global_config.attrs["fit_intercept"]
+            
+            # Load fitted metrics list
+            fitted_metrics_data = f["fitted_metrics"][:]
+            fitted_metrics = [metric.decode('utf-8') for metric in fitted_metrics_data]
+            
+            # Load each model
+            self.models = {}
+            self.fitted_metrics = set()
+            self.feature_cols = {}  # Initialize feature_cols dictionary
+            
+            for metric_name in fitted_metrics:
+                metric_group = f[f"metric_{metric_name}"]
+                
+                # Create model
+                model = MultiQuantileRegressor(
+                    metric_name=metric_name,
+                    alpha=self.alpha,
+                    solver=self.solver,
+                    fit_intercept=self.fit_intercept
+                )
+                
+                # Load model configuration
+                config_group = metric_group["config"]
+                model.alpha = config_group.attrs["alpha"]
+                model.solver = config_group.attrs["solver"]
+                model.fit_intercept = config_group.attrs["fit_intercept"]
+                model.n_features_ = config_group.attrs["n_features"]
+                
+                # Load percentiles
+                params_group = metric_group["parameters"]
+                model.percentiles_ = params_group["percentiles"][:].tolist()
+                
+                # Load coefficients and intercepts
+                coeffs_group = params_group["coefficients"]
+                intercepts_group = params_group["intercepts"]
+                
+                model.coefficients_ = {}
+                model.intercepts_ = {}
+                
+                for percentile in model.percentiles_:
+                    model.coefficients_[percentile] = coeffs_group[f"percentile_{percentile}"][:]
+                    model.intercepts_[percentile] = intercepts_group[f"percentile_{percentile}"][()]
+                
+                # Set fitted status
+                model.is_fitted_ = True
+                
+                # Load feature column names if available
+                metadata_group = metric_group["metadata"]
+                if "feature_cols" in metadata_group:
+                    feature_cols_bytes = metadata_group["feature_cols"][:]
+                    feature_cols = [col.decode('utf-8') for col in feature_cols_bytes]
+                    self.feature_cols[metric_name] = feature_cols
+                else:
+                    # For backward compatibility with older model files
+                    print(f"Warning: No feature column information found for metric '{metric_name}'. "
+                          "You will need to provide feature_cols explicitly during prediction.")
+                    self.feature_cols[metric_name] = None
+                
+                # Store model
+                self.models[metric_name] = model
+                self.fitted_metrics.add(metric_name)
+        
+        print(f"Loaded {len(self.fitted_metrics)} models from {filepath}")
+        print(f"  Metrics: {', '.join(self.fitted_metrics)}")
+        
+        return self
+    
+    @staticmethod
+    def load_from_file(filepath: str) -> "QuantileRegressorDataFrame":
+        """
+        Load models from file (static method).
+        
+        Args:
+            filepath: Path to the saved models file
+            
+        Returns:
+            Loaded QuantileRegressorDataFrame instance
+        """
+        instance = QuantileRegressorDataFrame()
+        return instance.load(filepath)
+    
+    def get_fitted_metrics(self) -> List[str]:
+        """
+        Get list of fitted metric names.
+        
+        Returns:
+            List of fitted metric names
+        """
+        return list(self.fitted_metrics)
+    
+    def get_model_info(self, metric_name: str) -> dict:
+        """
+        Get information about a specific fitted model.
+        
+        Args:
+            metric_name: Name of the metric
+            
+        Returns:
+            Dictionary containing model information
+        """
+        if metric_name not in self.fitted_metrics:
+            raise ValueError(f"Metric '{metric_name}' has not been fitted. Available metrics: {list(self.fitted_metrics)}")
+        
+        model = self.models[metric_name]
+        
+        return {
+            "model_type": "MultiQuantileRegressor",
+            "metric_name": metric_name,
+            "n_percentiles": len(model.percentiles_),
+            "percentile_range": f"{min(model.percentiles_)}-{max(model.percentiles_)}",
+            "n_features": model.n_features_,
+            "alpha": model.alpha,
+            "solver": model.solver,
+            "fit_intercept": model.fit_intercept,
+            "is_fitted": model.is_fitted_
+        }
+    
+    def get_all_models_info(self) -> dict:
+        """
+        Get information about all fitted models.
+        
+        Returns:
+            Dictionary mapping metric names to model information
+        """
+        return {metric_name: self.get_model_info(metric_name) for metric_name in self.fitted_metrics}
+
