@@ -22,7 +22,7 @@ class FeatureProperties:
             betas = np.asarray([betas])
         if isinstance(sigmas, (int, float)):
             sigmas = np.asarray([sigmas])
-            
+
         alphas = np.asarray(alphas)
         betas = np.asarray(betas)
         sigmas = np.asarray(sigmas)
@@ -66,13 +66,14 @@ class FeatureProperties:
 
 class Site:
     """Represents a data collection site with specific batch effects"""
-    gamma: ArrayLike #Additive site effect shape: (num_locations, 1)
-    delta: ArrayLike #Multiplicative site effect shape: (num_locations, 1)
+
+    gamma: ArrayLike  # Additive site effect shape: (num_locations, 1)
+    delta: ArrayLike  # Multiplicative site effect shape: (num_locations, 1)
     feature_properties: FeatureProperties
 
     def __init__(
         self,
-        gamma: ArrayLike, 
+        gamma: ArrayLike,
         delta: ArrayLike,
         feature_properties: FeatureProperties,
     ):
@@ -93,7 +94,6 @@ class Site:
 
         self.gamma = np.asarray(gamma)
         self.delta = np.asarray(delta)
- 
 
         # Accept (num_locations,) or (num_locations, 1) for gamma/delta
         if self.gamma.ndim == 1:
@@ -114,8 +114,9 @@ class Site:
                 f"delta must be 1D or 2D column vector of shape (num_locations, 1), got {self.delta.shape}"
             )
 
-        assert isinstance(feature_properties, FeatureProperties), \
-            "feature_properties must be an instance of FeatureProperties"
+        assert isinstance(
+            feature_properties, FeatureProperties
+        ), "feature_properties must be an instance of FeatureProperties"
         self.feature_properties = feature_properties
 
         # Validate that gamma/delta match the number of locations
@@ -176,12 +177,18 @@ class Site:
         #   cont_covars: (num_cont_covars, n_samples)
 
         # Site effects: delta * baseline + gamma, then scale by sigma
-        site_effect = self.delta * baseline_data + self.gamma  # (num_locations, n_samples)
-        scaled = self.feature_properties.sigmas * site_effect  # (num_locations, n_samples)
+        site_effect = (
+            self.delta * baseline_data + self.gamma
+        )  # (num_locations, n_samples)
+        scaled = (
+            self.feature_properties.sigmas * site_effect
+        )  # (num_locations, n_samples)
 
         # Population-level slope and intercept
-        data = self.feature_properties.alphas + np.dot(
-            self.feature_properties.betas, cont_covars) + scaled # (num_locations, n_samples)
+        data = (
+            self.feature_properties.alphas
+            + np.dot(self.feature_properties.betas, cont_covars)
+            + scaled
+        )  # (num_locations, n_samples)
 
         return data
-

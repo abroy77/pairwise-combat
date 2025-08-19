@@ -383,4 +383,3 @@ class PairwiseComBATDataFrame:
             "covariate_columns": self.covariate_cols,
             "site_id_column": self.site_id_col,
         }
-

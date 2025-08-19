@@ -565,7 +565,6 @@ class PairwiseComBAT:
             metadata_group.attrs["creation_time"] = datetime.now().isoformat()
             metadata_group.attrs["fitted"] = True
 
-
     def load_model(self, filepath: str) -> None:
         """
         Load a trained PairwiseComBAT model from HDF5 file
@@ -630,4 +629,3 @@ class PairwiseComBAT:
                 version = version.decode()
             if isinstance(creation_time, bytes):
                 creation_time = creation_time.decode()
-
