@@ -8,16 +8,92 @@ import numpy as np
 import tempfile
 from pathlib import Path
 from sklearn.metrics import mean_squared_error
-from tests.sites import FeatureProperties, Site
+from .sites import FeatureProperties, Site
 
-from pairwise_combat.polars_interface import PairwiseComBATDataFrame, create_example_dataframe
+from pairwise_combat import PairwiseComBATDataFrame 
 
 # Test constants  
 MIN_AGE = 18
 MAX_AGE = 90
 N_SAMPLES = 100
 
+def create_example_dataframe(
+    n_samples_per_site: int = 50,
+    n_locations: int = 3,
+    source_site: str = "site_A",
+    target_site: str = "site_B",
+    random_seed: int = 42,
+) -> pl.DataFrame:
+    """
+    Create an example DataFrame for testing PairwiseComBAT DataFrame interface.
 
+    Args:
+        n_samples_per_site: Number of samples per site
+        n_locations: Number of data locations/voxels
+        n_covariates: Number of covariates
+        source_site: Name of source site
+        target_site: Name of target site
+        random_seed: Random seed for reproducibility
+
+    Returns:
+        Example DataFrame with synthetic data
+    """
+    np.random.seed(random_seed)
+
+    # Generate covariate data
+    ages_source = np.random.uniform(20, 80, n_samples_per_site)
+    ages_target = np.random.uniform(25, 75, n_samples_per_site)
+
+    sex_source = np.random.randint(0, 2, n_samples_per_site)
+    sex_target = np.random.randint(0, 2, n_samples_per_site)
+
+    # Generate response data with site effects
+    # Target site (reference)
+    baseline_target = np.random.normal(5, 2, (n_samples_per_site, n_locations))
+    age_effect_target = np.outer(
+        ages_target - 50, np.random.uniform(0.02, 0.05, n_locations)
+    )
+    sex_effect_target = np.outer(sex_target, np.random.uniform(-0.5, 0.5, n_locations))
+    data_target = baseline_target + age_effect_target + sex_effect_target
+
+    # Source site (with site effects)
+    baseline_source = np.random.normal(
+        5.5, 2.2, (n_samples_per_site, n_locations)
+    )  # Different baseline
+    age_effect_source = np.outer(
+        ages_source - 50, np.random.uniform(0.025, 0.055, n_locations)
+    )  # Different age effect
+    sex_effect_source = np.outer(
+        sex_source, np.random.uniform(-0.6, 0.6, n_locations)
+    )  # Different sex effect
+    data_source = baseline_source + age_effect_source + sex_effect_source
+
+    # Create DataFrames
+    df_target = pl.DataFrame(
+        {
+            "site_id": [target_site] * n_samples_per_site,
+            "age": ages_target,
+            "sex": sex_target.astype(float),
+            **{f"voxel_{i+1}": data_target[:, i] for i in range(n_locations)},
+        }
+    )
+
+    df_source = pl.DataFrame(
+        {
+            "site_id": [source_site] * n_samples_per_site,
+            "age": ages_source,
+            "sex": sex_source.astype(float),
+            **{f"voxel_{i+1}": data_source[:, i] for i in range(n_locations)},
+        }
+    )
+
+    # Combine and shuffle
+    df_combined = pl.concat([df_target, df_source], how="vertical")
+
+    # Add sample IDs
+    df_combined = df_combined.with_row_index("sample_id")
+
+    return df_combined.sample(fraction=1.0, seed=random_seed)  # Shuffle rows
 # Fixtures from original test file
 @pytest.fixture
 def feature_property_fixture_2D():
